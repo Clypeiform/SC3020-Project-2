@@ -1,0 +1,5 @@
+psycopg2>=2.9.0
+networkx>=2.8.0
+matplotlib>=3.5.0
+typing>=3.7.4
+dataclasses>=0.8; python_version < '3.7'
