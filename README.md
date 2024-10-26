@@ -2,12 +2,12 @@
  setup:
     Ensure that database has been setup in postgresql
 
-    Installations:
-        ```
-        cd SC3020 Project 2 
-        pip install -r requirements.txt
-        python project.py
-        ```
+## Installations:
+    ```
+    cd SC3020 Project 2 
+    pip install -r requirements.txt
+    python project.py
+    ```
 
 
  todo:
