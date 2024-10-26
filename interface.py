@@ -1,24 +1,91 @@
 import tkinter as tk
-from tkinter import ttk, scrolledtext
+from tkinter import ttk, scrolledtext, messagebox
 import json
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import psycopg2
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import networkx as nx
 
+class LoginWindow(tk.Toplevel):
+    def __init__(self, parent, callback):
+        super().__init__(parent)
+        self.callback = callback
+        self.title("Database Login")
+        self.geometry("300x250")
+        
+        # Remove centering relative to parent since parent is withdrawn
+        self.geometry("+%d+%d" % (self.winfo_screenwidth()//4, self.winfo_screenheight()//4))
+        
+        # Create form
+        ttk.Label(self, text="Database Connection", font=('Helvetica', 12, 'bold')).pack(pady=10)
+        
+        frame = ttk.Frame(self)
+        frame.pack(padx=20, pady=10)
+        
+        # Database connection fields
+        fields = [('Host:', 'localhost'), ('Port:', '5432'), 
+                 ('Database:', 'TPC-H'), ('Username:', 'postgres'), 
+                 ('Password:', '')]
+        
+        self.entries = {}
+        for label, default in fields:
+            row = ttk.Frame(frame)
+            row.pack(fill='x', pady=5)
+            ttk.Label(row, text=label, width=10).pack(side='left')
+            entry = ttk.Entry(row)
+            entry.insert(0, default)
+            if 'Password' in label:
+                entry.config(show='*')
+            entry.pack(side='left', fill='x', expand=True)
+            self.entries[label.replace(':', '').lower()] = entry
+        
+        # Connect button
+        ttk.Button(self, text="Connect", command=self.connect).pack(pady=10)
+        
+        # Make modal but don't use transient since parent is withdrawn
+        self.grab_set()
+    
+    def connect(self):
+        try:
+            conn = psycopg2.connect(
+                host=self.entries['host'].get(),
+                port=self.entries['port'].get(),
+                dbname=self.entries['database'].get(),
+                user=self.entries['username'].get(),
+                password=self.entries['password'].get()
+            )
+            self.callback(conn)
+            self.destroy()
+        except Exception as e:
+            messagebox.showerror("Connection Error", str(e))
+
 class QueryPlanAnalyzer(tk.Tk):
     def __init__(self):
         super().__init__()
-
+        
+        # Initialize variables before showing login window
         self.title("Query Plan Analysis Tool")
         self.geometry("1200x800")
-        
-        # Initialize variables
         self.qep_data = None
         self.aqp_data = None
+        self.connection = None
         
-        self.create_widgets()
+        # Center the main window
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        x = (screen_width - 1200) // 2
+        y = (screen_height - 800) // 2
+        self.geometry(f"1200x800+{x}+{y}")
+        
+        # Show login window
+        self.withdraw()
+        self.login_window = LoginWindow(self, self.on_login_success)
+        
+    def on_login_success(self, connection):
+        self.connection = connection
+        self.create_widgets()  # Create widgets before showing the window
+        self.deiconify()      # Show the main window
         
     def create_widgets(self):
         # Create main container
@@ -37,9 +104,9 @@ class QueryPlanAnalyzer(tk.Tk):
         self.query_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Generate button
-        generate_btn = ttk.Button(left_panel, text="Generate Query Plan", 
-                                command=self.generate_query_plan)
-        generate_btn.pack(pady=10)
+        self.generate_btn = ttk.Button(left_panel, text="Generate Query Plan", 
+                                     command=self.generate_query_plan)
+        self.generate_btn.pack(pady=10)
         
         # Right panel with notebook for QEP and AQP
         right_panel = ttk.Notebook(main_container)
@@ -85,28 +152,13 @@ class QueryPlanAnalyzer(tk.Tk):
             
         try:
             # Get query plan from PostgreSQL
-            self.qep_data = self.get_query_plan(sql)
+            with self.connection.cursor() as cur:
+                cur.execute(f"EXPLAIN (FORMAT JSON) {sql}")
+                self.qep_data = cur.fetchone()[0]
             self.visualize_plan(self.qep_data, is_qep=True)
             self.update_cost_labels()
         except Exception as e:
-            self.show_error(f"Error generating query plan: {str(e)}")
-
-    def get_query_plan(self, sql: str) -> Dict[str, Any]:
-        """Retrieve query plan from PostgreSQL"""
-        # Connection details should be configurable
-        conn = psycopg2.connect(
-            dbname="TPC-H",
-            user="postgres",
-            password="password",
-            host="localhost"
-        )
-        
-        try:
-            with conn.cursor() as cur:
-                cur.execute(f"EXPLAIN (FORMAT JSON) {sql}")
-                return cur.fetchone()[0]
-        finally:
-            conn.close()
+            messagebox.showerror("Error", f"Error generating query plan: {str(e)}")
 
     def visualize_plan(self, plan_data: Dict[str, Any], is_qep: bool = True):
         """Visualize query plan as a tree using networkx and matplotlib"""
@@ -118,7 +170,7 @@ class QueryPlanAnalyzer(tk.Tk):
         figure.clear()
         
         # Create graph from plan data
-        self.build_plan_graph(G, plan_data['Plan'], None)
+        self.build_plan_graph(G, plan_data[0]['Plan'], None)
         
         # Draw the graph
         ax = figure.add_subplot(111)
@@ -143,16 +195,16 @@ class QueryPlanAnalyzer(tk.Tk):
     def update_cost_labels(self):
         """Update cost comparison labels"""
         if self.qep_data:
-            qep_cost = self.qep_data['Plan'].get('Total Cost', 'N/A')
+            qep_cost = self.qep_data[0]['Plan'].get('Total Cost', 'N/A')
             self.qep_cost_label.config(text=f"Original QEP Cost: {qep_cost}")
             
         if self.aqp_data:
-            aqp_cost = self.aqp_data['Plan'].get('Total Cost', 'N/A')
+            aqp_cost = self.aqp_data[0]['Plan'].get('Total Cost', 'N/A')
             self.aqp_cost_label.config(text=f"Modified AQP Cost: {aqp_cost}")
 
-    def show_error(self, message: str):
-        """Show error dialog"""
-        tk.messagebox.showerror("Error", message)
+    def __del__(self):
+        if self.connection:
+            self.connection.close()
 
 if __name__ == "__main__":
     app = QueryPlanAnalyzer()

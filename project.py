@@ -1,6 +1,6 @@
 import sys
-from typing import Optional
 import logging
+from typing import Optional
 from interface import QueryPlanAnalyzer
 from preprocessing import QueryPreprocessor, DatabaseConfig
 from whatif import QueryPlanModifier
@@ -8,10 +8,9 @@ from whatif import QueryPlanModifier
 class QueryPlanAnalysisSystem:
     def __init__(self):
         self._setup_logging()
-        self.config = self._load_config()
-        self.preprocessor = QueryPreprocessor(self.config)
-        self.modifier = QueryPlanModifier()
-        self.gui: Optional[QueryPlanAnalyzer] = None
+        self.preprocessor = None
+        self.modifier = None
+        self.gui = None
 
     def _setup_logging(self):
         logging.basicConfig(
@@ -24,43 +23,59 @@ class QueryPlanAnalysisSystem:
         )
         self.logger = logging.getLogger(__name__)
 
-    def _load_config(self) -> DatabaseConfig:
-        config = DatabaseConfig()
-        is_valid, error = DatabaseConfig.validate_config()
-        
-        if not is_valid:
-            self.logger.error(f"Invalid database configuration: {error}")
-            raise ValueError(f"Invalid database configuration: {error}")
-            
-        self.logger.info("Database configuration loaded successfully")
-        return config
-
     def initialize(self):
         """Initialize the system components"""
         try:
-            # Initialize database connection
-            self.preprocessor.connect()
-            
-            # Create and configure GUI
+            # Create GUI first - it will handle login
             self.gui = QueryPlanAnalyzer()
             
-            # Connect GUI events to handlers
-            self._setup_event_handlers()
+            # Set up callback for after successful login
+            self.gui.after_login_callback = self.post_login_setup
             
-            self.logger.info("System initialized successfully")
+            self.logger.info("GUI initialized successfully")
+
         except Exception as e:
             self.logger.error(f"Error during system initialization: {str(e)}")
             raise
-    def _setup_event_handlers(self):
-            """Connect GUI events to their handlers"""
-            if not self.gui:
-                return
 
-            # Connect GUI events to corresponding methods
-            self.gui.bind_generate_plan(self.handle_generate_plan)
-            self.gui.bind_operator_change(self.handle_operator_modification)
-            self.gui.bind_join_order_change(self.handle_join_order_modification)
-            self.gui.bind_reset(self.handle_reset)
+    def post_login_setup(self, connection):
+        """Setup components after successful database connection"""
+        try:
+            # Create DatabaseConfig from successful connection
+            config = DatabaseConfig(
+                host=connection.info.host,
+                port=connection.info.port,
+                dbname=connection.info.dbname,
+                user=connection.info.user,
+                password=connection.info.password
+            )
+            
+            # Initialize preprocessor with existing connection
+            self.preprocessor = QueryPreprocessor(config)
+            self.preprocessor.connection = connection
+            
+            # Initialize plan modifier
+            self.modifier = QueryPlanModifier()
+            
+            # Setup event handlers
+            self._setup_event_handlers()
+            
+            self.logger.info("System components initialized successfully after login")
+
+        except Exception as e:
+            self.logger.error(f"Error during post-login setup: {str(e)}")
+            self.gui.show_error(f"Error during setup: {str(e)}")
+
+    def _setup_event_handlers(self):
+        """Connect GUI events to their handlers"""
+        if not self.gui:
+            return
+
+        # Connect GUI events to corresponding methods
+        self.gui.bind('<Generate>', self.handle_generate_plan)
+        self.gui.bind('<OperatorChange>', self.handle_operator_modification)
+        self.gui.bind('<JoinOrderChange>', self.handle_join_order_modification)
+        self.gui.bind('<Reset>', self.handle_reset)
 
     def handle_generate_plan(self, sql: str) -> None:
         """Handle generation of initial query plan"""
@@ -70,7 +85,7 @@ class QueryPlanAnalysisSystem:
             if not is_valid:
                 self.gui.show_error(f"Invalid SQL: {error}")
                 return
-
+            
             # Get initial query plan
             initial_plan = self.preprocessor.get_query_plan(sql)
             
@@ -85,85 +100,10 @@ class QueryPlanAnalysisSystem:
             self.gui.update_metrics_display(complexity_metrics)
             
             self.logger.info("Query plan generated successfully")
-            
+
         except Exception as e:
             self.logger.error(f"Error generating query plan: {str(e)}")
             self.gui.show_error(f"Error generating plan: {str(e)}")
-
-    def handle_operator_modification(self, node_id: str, new_operator_type: str) -> None:
-        """Handle modification of an operator in the query plan"""
-        try:
-            # Attempt to modify the operator
-            success = self.modifier.modify_operator(node_id, new_operator_type)
-            
-            if not success:
-                self.gui.show_error("Failed to modify operator")
-                return
-                
-            # Generate modified SQL with hints
-            modified_sql = self.modifier.generate_modified_sql(
-                self.gui.get_current_sql()
-            )
-            
-            # Get new execution plan
-            new_plan = self.preprocessor.get_query_plan(modified_sql)
-            
-            # Compare plans
-            comparison = self.modifier.compare_plans()
-            
-            # Update GUI with new plan and comparison
-            self.gui.update_alternative_plan(new_plan)
-            self.gui.update_cost_comparison(comparison)
-            
-            self.logger.info(f"Operator modified successfully: {node_id} -> {new_operator_type}")
-            
-        except Exception as e:
-            self.logger.error(f"Error modifying operator: {str(e)}")
-            self.gui.show_error(f"Error modifying operator: {str(e)}")
-
-    def handle_join_order_modification(self, node_ids: list) -> None:
-        """Handle modification of join order in the query plan"""
-        try:
-            # Attempt to modify join order
-            success = self.modifier.modify_join_order(node_ids)
-            
-            if not success:
-                self.gui.show_error("Failed to modify join order")
-                return
-                
-            # Generate modified SQL with hints
-            modified_sql = self.modifier.generate_modified_sql(
-                self.gui.get_current_sql()
-            )
-            
-            # Get new execution plan
-            new_plan = self.preprocessor.get_query_plan(modified_sql)
-            
-            # Compare plans
-            comparison = self.modifier.compare_plans()
-            
-            # Update GUI with new plan and comparison
-            self.gui.update_alternative_plan(new_plan)
-            self.gui.update_cost_comparison(comparison)
-            
-            self.logger.info("Join order modified successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Error modifying join order: {str(e)}")
-            self.gui.show_error(f"Error modifying join order: {str(e)}")
-
-    def handle_reset(self) -> None:
-        """Handle reset of modifications"""
-        try:
-            self.modifier.reset_modifications()
-            self.gui.reset_alternative_plan()
-            self.gui.reset_cost_comparison()
-            
-            self.logger.info("Plan modifications reset successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Error resetting modifications: {str(e)}")
-            self.gui.show_error(f"Error resetting modifications: {str(e)}")
 
     def run(self):
         """Run the application"""
@@ -174,22 +114,21 @@ class QueryPlanAnalysisSystem:
             # Start the GUI main loop
             if self.gui:
                 self.gui.mainloop()
-                
+
         except Exception as e:
             self.logger.error(f"Error running application: {str(e)}")
             raise
+
         finally:
-            # Clean up
             self.cleanup()
 
     def cleanup(self):
         """Clean up resources"""
         try:
-            # Close database connection
-            self.preprocessor.disconnect()
-            
+            if self.preprocessor:
+                self.preprocessor.disconnect()
             self.logger.info("Cleanup completed successfully")
-            
+
         except Exception as e:
             self.logger.error(f"Error during cleanup: {str(e)}")
 
@@ -198,6 +137,7 @@ if __name__ == "__main__":
         # Create and run the application
         app = QueryPlanAnalysisSystem()
         app.run()
+
     except Exception as e:
         logging.error(f"Application failed to start: {str(e)}")
         sys.exit(1)
